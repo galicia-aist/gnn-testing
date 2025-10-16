@@ -8,6 +8,13 @@ from torch_geometric.datasets import CitationFull, Amazon, Actor
 from torch_geometric.nn import GCNConv
 import numpy as np
 import scipy.sparse as sp
+from sklearn.metrics import roc_auc_score
+
+@torch.no_grad()
+def eval_metrics(out, nodes, labels):
+    y_pred = (out[nodes] > 0).long()
+    acc = (y_pred == labels.long()).float().mean().item()
+    return acc
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -111,8 +118,6 @@ def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
 
     data = dataset[0].to(device)
 
-    features = sp.csr_matrix(dataset.x, dtype=np.float32)
-
     # Pick a chosen class for binary classification
     chosen_label = 0
     if name.lower() == "arxiv":
@@ -143,15 +148,6 @@ def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
 
     idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, data.y, label_node, label_non_node, seed=42)
 
-    # Masks (restrict GCN to only those nodes)
-    # data.train_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
-    # data.val_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
-    # data.test_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
-
-    # data.train_mask[idx_train] = True
-    # data.val_mask[idx_val] = True
-    # data.test_mask[idx_test] = True
-
     node_train_ids = torch.tensor([k[0] for k in node_train.keys()], dtype=torch.long, device=device)
     y_train = torch.tensor(list(node_train.values()), dtype=torch.float, device=device)
 
@@ -179,52 +175,74 @@ def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
     def train():
         model.train()
         optimizer.zero_grad()
-        out = model(data.x, data.edge_index)  # full graph forward
-        loss = loss_fn(out[node_train_ids], y_train)  # only flattened nodes
+        out = model(data.x, data.edge_index)
+        loss = loss_fn(out[node_train_ids], y_train)
         loss.backward()
         optimizer.step()
-        return loss.item()
+        return loss.item(), out
 
     @torch.no_grad()
-    def test():
+    def test(out):
         model.eval()
-        out = model(data.x, data.edge_index)
 
-        # Convert logits to predicted labels
-        y_pred_train = (out[node_train_ids] > 0).long()
-        y_pred_val = (out[node_val_ids] > 0).long()
-        y_pred_test = (out[node_test_ids] > 0).long()
+        # Accuracies
+        acc_train = eval_metrics(out, node_train_ids, y_train)
+        acc_val = eval_metrics(out, node_val_ids, y_val)
+        acc_test = eval_metrics(out, node_test_ids, y_test)
 
-        # Compute accuracies
-        acc_train = (y_pred_train == y_train.long()).float().mean().item()
-        acc_val = (y_pred_val == y_val.long()).float().mean().item()
-        acc_test = (y_pred_test == y_test.long()).float().mean().item()
+        # Validation AUC
+        auc_val = roc_auc_score(y_val.cpu().numpy(), out[node_val_ids].cpu().numpy())
 
-        return acc_train, acc_val, acc_test
+        # Validation loss
+        loss_val = loss_fn(out[node_val_ids], y_val).item()
 
-    # Run training
+        return acc_train, acc_val, acc_test, loss_val, auc_val
+
+    # ---- Training loop ----
     start_time = time.time()
     best_val_acc = 0
     best_test_acc = 0
 
     for epoch in range(1, max_epochs + 1):
-        loss = train()
-        train_acc, val_acc, test_acc = test()
+        epoch_start = time.time()
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_test_acc = test_acc
+        loss_train, out = train()
+        acc_train, acc_val, _, loss_val, auc_val = test(out)  # only compute train+val acc for per-epoch print
 
-    end_time = time.time()
-    duration = end_time - start_time
+        epoch_time = time.time() - epoch_start
+        reach_time = time.time() - start_time
 
-    return {
-        "dataset": name,
-        "best_val_acc": best_val_acc,
-        "best_test_acc": best_test_acc,
-        "training_time_sec": duration
-    }
+        # Update best
+        if acc_val > best_val_acc:
+            best_val_acc = acc_val
+            best_test_acc = eval_metrics(out, node_test_ids, y_test)
 
+        # Epoch print
+        print(f"Epoch: {epoch:04d} | loss_train: {loss_train:.4f} | acc_train: {acc_train:.4f} | "
+              f"loss_val: {loss_val:.4f} | acc_val: {acc_val:.4f} | auc_val: {auc_val:.4f} | "
+              f"time_taken: {epoch_time:.4f}s | reach_time: {reach_time:.4f}s")
+
+        # Full test evaluation every 100 epochs
+        if epoch % 100 == 0:
+            acc_test = eval_metrics(out, node_test_ids, y_test)
+            loss_test = loss_fn(out[node_test_ids], y_test).item()
+
+            # Detach before converting to numpy
+            auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
+
+            print(
+                f"[Test evaluation at epoch {epoch}] loss= {loss_test:.4f} | "
+                f"accuracy= {acc_test:.4f} | auc= {auc_test:.4f}"
+            )
+
+    # Final test print
+    total_time = time.time() - start_time
+    out = model(data.x, data.edge_index)
+    acc_test = eval_metrics(out, node_test_ids, y_test)
+    loss_test = loss_fn(out[node_test_ids], y_test).item()
+    auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
+    print(
+        f"Final Test set results: loss= {loss_test:.4f} | accuracy= {acc_test:.4f} | auc= {auc_test:.4f} | total time= {total_time:.2f}s")
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
