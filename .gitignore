@@ -1,2 +1,5 @@
 .idea/
 datasets/
+__pycache__/
+global_settings.json
+logs/

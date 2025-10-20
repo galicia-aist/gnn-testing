@@ -1,61 +1,11 @@
 import math
-import random
-from itertools import chain  # 2024.7.31
-import torch
-import torch.nn.functional as F
 import time
 from torch_geometric.datasets import CitationFull, Amazon, Actor
-from torch_geometric.nn import GCNConv
-import numpy as np
-import scipy.sparse as sp
+from models import GCN
 from sklearn.metrics import roc_auc_score
-
-@torch.no_grad()
-def eval_metrics(out, nodes, labels):
-    y_pred = (out[nodes] > 0).long()
-    acc = (y_pred == labels.long()).float().mean().item()
-    return acc
-
-def encode_onehot(labels):
-    classes = set(labels)
-    classes_dict = {c: np.identity(len(classes))[i, :] for i, c in
-                    enumerate(classes)}
-    labels_onehot = np.array(list(map(classes_dict.get, labels)),
-                             dtype=np.int32)
-    return labels_onehot
-
-# Define GCN model
-class GCN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, dropout):
-        super(GCN, self).__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, 1)  # one logit for binary classification
-        self.dropout = dropout
-
-    def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.conv2(x, edge_index)
-        return x.view(-1)
+from utils import *
 
 
-def get_flattened_nodes(bag_node, chosen_label, labels, r_start, r_end):
-    flattened_nodes = dict()
-    bag_node_keys = list(bag_node.keys())
-    bag_node_keys = bag_node_keys[r_start:r_end]
-    # https://stackoverflow.com/questions/9401209/how-to-merge-an-arbitrary-number-of-tuples-in-python
-    node_in_bags = list(chain.from_iterable(bag_node_keys))
-    node_in_bags = list(set(node_in_bags))
-    random.shuffle(node_in_bags)
-
-    for node_id in node_in_bags:
-        if labels[node_id].item() == chosen_label:
-            flattened_nodes[tuple([node_id])] = 1
-        else:
-            flattened_nodes[tuple([node_id])] = 0
-
-    return flattened_nodes
 
 def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, seed=42):
     bag_node = dict()
@@ -113,14 +63,14 @@ def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, seed=
     return idx_train, idx_val, idx_test, node_train, node_eva
 
 
-def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
+def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
                    lr=0.01, weight_decay=5e-4, max_epochs=500):
 
-    data = dataset[0].to(device)
+    dataset = load_data(chosen_dataset)
 
     # Pick a chosen class for binary classification
     chosen_label = 0
-    if name.lower() == "arxiv":
+    if chosen_dataset.lower() == "arxiv":
         labels = encode_onehot(dataset.y.squeeze().numpy())
     else:
         labels = encode_onehot(dataset.y.numpy())
@@ -146,7 +96,7 @@ def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
 
     # Pick a chosen class and consistent evaluation nodes
 
-    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, data.y, label_node, label_non_node, seed=42)
+    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, seed=42)
 
     node_train_ids = torch.tensor([k[0] for k in node_train.keys()], dtype=torch.long, device=device)
     y_train = torch.tensor(list(node_train.values()), dtype=torch.float, device=device)
@@ -167,7 +117,7 @@ def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
     labels_eva = torch.LongTensor(labels_eva)
 
     # ---- GCN training same as before ----
-    data = data.to(device)
+    data = dataset
     model = GCN(dataset.num_features, hidden_units, dropout_rate).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = torch.nn.BCEWithLogitsLoss()
@@ -245,22 +195,36 @@ def run_experiment(dataset, name, device, hidden_units=64, dropout_rate=0.5,
         f"Final Test set results: loss= {loss_test:.4f} | accuracy= {acc_test:.4f} | auc= {auc_test:.4f} | total time= {total_time:.2f}s")
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    args = get_args()
 
-    experiments = [
-        (CitationFull(root='../datasets/citationfull/', name='Cora_ML'), "Cora_ML"),
-        (CitationFull(root='../datasets/citationfull/', name='CiteSeer'), "CiteSeer"),
-        (Amazon(root='../datasets/amazon/', name='photo'), "Amazon-Photo"),
-        (Actor(root='../datasets/actor/'), "Actor"),
-    ]
+    device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
 
-    results = []
-    for dataset, name in experiments:
-        print(f"Running experiment on {name}...")
-        result = run_experiment(dataset, name, device)
-        results.append(result)
-        print(f"Finished {name}: {result}\n")
+    logger_settings = {
+        "logger": {
+            "model": args.model,
+            "log_path": args.log_path,
+            "dataset": args.d,
+            "log_level": args.log_level.upper()
+        },
+        "ddp": args.ddp
+    }
 
-    print("===== Final Results =====")
-    for res in results:
-        print(res)
+    with open("global_settings.json", "w") as file:
+        json.dump(logger_settings, file, indent=4)
+
+    logger = get_logger()
+
+    log_experiment_settings(logger, args)
+
+    if args.cuda:
+        torch.cuda.manual_seed(args.seed)
+
+    run_experiment(
+        args.d,
+        device,
+        hidden_units=args.hidden,
+        dropout_rate=args.dropout,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        max_epochs=args.epochs
+    )
