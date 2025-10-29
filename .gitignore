@@ -1,5 +1,14 @@
-.idea/
-datasets/
+# IDE
+*.idea/
+
+# Python cache
 __pycache__/
-global_settings.json
 logs/
+
+# Data and results
+datasets/
+results_plotted/
+results/
+
+# Config
+global_settings.json

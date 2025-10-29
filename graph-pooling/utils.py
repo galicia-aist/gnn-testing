@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import random
+from datetime import datetime
+
 import numpy as np
 import torch
 from itertools import chain  # 2024.7.31
@@ -18,6 +20,11 @@ def get_args():
     parser.add_argument('--model', type=str, choices=['gcn', 'gat', 'sage'], required=True, help='Choose model from GCN, GAT, SAGE')
     parser.add_argument('--d', type=str, choices=['coraml', 'citeseer', 'photo', 'actor', 'reddit', 'arxiv'], required=True,
                         help='Dataset to use (coraml=Cora-ML, citeseer=CiteSeer, photo=Amazon-Photo, actor=Actor, reddit=Reddit, arxiv=OGB Arxiv).')
+    parser.add_argument('--mode', type=int, required=True,
+                        help='Mode parameter. 1 for collective MIL. 2 for standard MIL.')
+    parser.add_argument('--class_type', type=str, choices=['node', 'bag'], required=True, help='Classification type')
+    parser.add_argument('--pool', type=str, choices=['sum', 'mean', 'max', 'attention', 'set2set', 'default'], required=True,
+                        help='Graph pooling type.')
 
     # Training configuration
     parser.add_argument('--epochs', type=int, default=500, help='Number of epochs to train.')
@@ -197,3 +204,57 @@ def get_logger():
         logger.setLevel(logging.DEBUG if log_level == "DEBUG" else logging.INFO)
 
     return logger
+
+def write_experiment_summary(args, test_results, total_time, filename=None):
+    """
+    Write a formatted experiment summary to a file.
+
+    Args:
+        args: argparse.Namespace containing experiment arguments
+        test_results: list of dicts with keys {epoch, loss, accuracy, auc}
+        total_time: float, total training time in seconds
+        filename: optional string, path to output file. If None, will auto-generate.
+    """
+    # Create results directory if not exists
+    os.makedirs("results", exist_ok=True)
+
+    if filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"results/{args.model}_{args.d}_MIL{args.mode}_{args.pool}_{args.class_type}_{timestamp}.txt"
+
+    # Identify best results
+    best_acc_result = max(test_results, key=lambda x: x["accuracy"])
+    best_auc_result = max(test_results, key=lambda x: x["auc"])
+
+    with open(filename, "w") as f:
+        f.write("===== Experiment Summary =====\n\n")
+
+        # Arguments
+        f.write(">>> Arguments used:\n")
+        max_len = max(len(k) for k in vars(args).keys())
+        for k, v in vars(args).items():
+            f.write(f"  {k.ljust(max_len)} : {v}\n")
+        f.write("\n")
+
+        # Training info
+        f.write(f">>> Total training time: {total_time:.2f} seconds\n\n")
+
+        # Results per checkpoint
+        f.write(">>> Test results (every 100 epochs):\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"{'Epoch':>6} | {'Loss':>10} | {'Accuracy':>10} | {'AUC':>10} | {'Time(s)':>10}\n")
+        f.write("-" * 80 + "\n")
+        for r in test_results:
+            f.write(f"{r['epoch']:>6} | {r['loss']:>10.4f} | {r['accuracy']:>10.4f} | "
+                    f"{r['auc']:>10.4f} | {r['time']:>10.2f}\n")
+        f.write("-" * 80 + "\n\n")
+
+
+        # Best epochs
+        f.write(">>> Best results:\n")
+        f.write(f"  Highest accuracy at epoch {best_acc_result['epoch']} "
+                f"(acc={best_acc_result['accuracy']:.4f}, auc={best_acc_result['auc']:.4f})\n")
+        f.write(f"  Highest AUC at epoch {best_auc_result['epoch']} "
+                f"(auc={best_auc_result['auc']:.4f}, acc={best_auc_result['accuracy']:.4f})\n")
+
+    return filename

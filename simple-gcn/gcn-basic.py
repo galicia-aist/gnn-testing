@@ -1,59 +1,136 @@
+import argparse
+import random
+import torch.multiprocessing as mp
 import torch
-import torch.nn.functional as F
-from torch_geometric.datasets import Planetoid
-from torch_geometric.nn import GCNConv
+import numpy as np
+from torch_geometric.datasets import Planetoid, CitationFull, Reddit
+from utils import *
+from torch_geometric.loader import NeighborLoader
+from torch.utils.data.distributed import DistributedSampler
+from sgc import SGC, train, evaluate
+from gcn import GCN
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from data_loader import get_training_data
 
-# Load Cora dataset
-dataset = Planetoid(root='./datasets', name='Cora')
-data = dataset[0]  # Cora has a single graph
 
-# Define a simple 2-layer GCN
-class GCN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
-        super(GCN, self).__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, out_channels)
+def main(rank, world_size, args, device, logger=None):
+    batch_size_train = 1024
+    batch_size_test = 2048
 
-    def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
-        return F.log_softmax(x, dim=1)
+    logger.debug("before loading data")
 
-# Initialize model, optimizer, and device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = GCN(dataset.num_features, 16, dataset.num_classes).to(device)
-data = data.to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
+    data = get_training_data(args.dataset)
 
-# Training loop
-def train():
-    model.train()
-    optimizer.zero_grad()
-    out = model(data.x, data.edge_index)
-    loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
-    loss.backward()
-    optimizer.step()
-    return loss.item()
+    logger.debug("after loading data")
 
-# Test function
-def test():
-    model.eval()
-    out = model(data.x, data.edge_index)
-    pred = out.argmax(dim=1)
+    if args.dataset == "Reddit":
+        if args.ddp:
+            train_sampler = DistributedSampler(
+                data.train_mask.nonzero().squeeze(),  # Get only training indices
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True
+            )
 
-    accs = []
-    for mask in [data.train_mask, data.val_mask, data.test_mask]:
-        correct = pred[mask] == data.y[mask]
-        acc = int(correct.sum()) / int(mask.sum())
-        accs.append(acc)
-    return accs
+            test_sampler = DistributedSampler(
+                data.test_mask.nonzero().squeeze(),  # Get only test indices
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False
+            )
 
-# Run training
-for epoch in range(1, 201):
-    loss = train()
-    train_acc, val_acc, test_acc = test()
-    if epoch % 10 == 0:
-        print(f'Epoch: {epoch:03d}, Loss: {loss:.4f}, '
-              f'Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
+            train_loader = NeighborLoader(
+                data,
+                num_neighbors=[10, 10],  # Sample 10 neighbors per layer
+                batch_size=batch_size_train,
+                input_nodes=data.train_mask,
+                sampler=train_sampler  # Ensure each GPU only gets a part of the dataset
+            )
+
+            test_loader = NeighborLoader(
+                data,
+                num_neighbors=[10, 10],
+                batch_size=batch_size_test,
+                input_nodes=data.test_mask,
+                sampler=test_sampler  # Ensure correct test distribution
+            )
+        else:
+            train_loader = NeighborLoader(
+                data,
+                num_neighbors=[10, 10],  # Sample 10 neighbors per layer
+                batch_size=batch_size_train,
+                input_nodes=data.train_mask
+            )
+
+            test_loader = NeighborLoader(
+                data,
+                num_neighbors=[10, 10],
+                batch_size=batch_size_test,
+                input_nodes=data.test_mask
+            )
+    else:
+        train_loader = None
+        test_loader = None
+    if args.model == "GCN":
+        model = GCN(data, args.hidden).to(device)
+    else:
+        model = SGC(data).to(device)
+    if args.ddp:
+        model = DDP(model, device_ids=[rank], output_device=rank)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    for epoch in range(1, args.epochs):
+        loss = train(model, optimizer, device, data, train_loader=train_loader, dataset_name=args.dataset)
+        logger.debug(f'Epoch {epoch}: Loss: {loss:.4f}')
+
+    if args.ddp:
+        dist.barrier()
+        if rank == 0:
+            accuracy = evaluate(model, device, data, test_loader=test_loader, dataset_name=args.dataset)
+            logger.info(f"Test Accuracy: {accuracy:.4f}")
+    else:
+        accuracy = evaluate(model, device, data, test_loader=test_loader, dataset_name=args.dataset)
+        logger.info(f"Test Accuracy: {accuracy:.4f}")
+
+if __name__ == "__main__":
+    args = get_args()
+
+    args.cuda = args.cuda and torch.cuda.is_available()
+    device = torch.device('cuda' if args.cuda else 'cpu')
+
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.cuda:
+        torch.cuda.manual_seed(args.seed)
+
+    logger_settings = {
+        "logger": {
+            "model": args.model,
+            "log_path": args.log_path,
+            "dataset": args.dataset,
+            "log_level": args.log_level.upper()
+        },
+        "ddp": args.ddp
+    }
+
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    with open("global_settings.json", "w") as file:
+        json.dump(logger_settings, file, indent=4)
+
+    logger = get_logger()
+
+    log_experiment_settings(logger, args)
+
+    world_size = None
+
+    if args.ddp:
+        world_size = torch.cuda.device_count()
+        mp.set_start_method("spawn", force=True)
+        mp.spawn(main, args=(world_size, args, device), nprocs=world_size, join=True)
+    else:
+        main(0, 0, args, device, logger=logger)
+

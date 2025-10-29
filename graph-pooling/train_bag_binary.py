@@ -1,20 +1,19 @@
 import math
 import time
 from torch_geometric.datasets import CitationFull, Amazon, Actor
-from models import GCN
+from models import GCN, GAT, GraphSAGE
 from sklearn.metrics import roc_auc_score
 from utils import *
 
 
 
-def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, seed=42):
+def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42):
     bag_node = dict()
     random.seed(seed)
     torch.manual_seed(seed)
 
     # internal node ratio for positive and negative bags
-    pos_ratio = 0.8
-    neg_ratio = 0.2
+    bag_neg_ratio = 1 - bag_pos_ratio
 
     pos_count = 0
     neg_count = 0
@@ -24,9 +23,9 @@ def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, seed=
         make_positive = random.random() < 0.5  # 50% chance
 
         if make_positive:
-            p = math.ceil(n * pos_ratio)  # number of positive nodes
+            p = math.ceil(n * bag_pos_ratio)  # number of positive nodes
         else:
-            p = math.ceil(n * neg_ratio)  # number of positive nodes for negative bag
+            p = math.ceil(n * bag_neg_ratio)  # number of positive nodes for negative bag
 
         q = n - p  # remaining nodes are negative
 
@@ -63,8 +62,8 @@ def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, seed=
     return idx_train, idx_val, idx_test, node_train, node_eva
 
 
-def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
-                   lr=0.01, weight_decay=5e-4, max_epochs=500):
+def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units=64, dropout_rate=0.5,
+                   lr=0.01, weight_decay=5e-4, max_epochs=500, logger=None):
 
     dataset = load_data(chosen_dataset)
 
@@ -96,7 +95,7 @@ def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
 
     # Pick a chosen class and consistent evaluation nodes
 
-    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, seed=42)
+    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, bag_ratio, seed=42)
 
     node_train_ids = torch.tensor([k[0] for k in node_train.keys()], dtype=torch.long, device=device)
     y_train = torch.tensor(list(node_train.values()), dtype=torch.float, device=device)
@@ -118,7 +117,15 @@ def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
 
     # ---- GCN training same as before ----
     data = dataset
-    model = GCN(dataset.num_features, hidden_units, dropout_rate).to(device)
+    if chosen_model.lower() == "gcn":
+        model = GCN(dataset.num_features, hidden_units, dropout_rate).to(device)
+    elif chosen_model.lower() == "gat":
+        model = GAT(dataset.num_features, hidden_units, dropout_rate, heads=1).to(device)  # adjust heads if needed
+    elif chosen_model.lower() == "sage":
+        model = GraphSAGE(dataset.num_features, hidden_units, dropout_rate).to(device)
+    else:
+        raise ValueError(f"Unknown model type: {args.model}")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = torch.nn.BCEWithLogitsLoss()
 
@@ -149,6 +156,7 @@ def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
         return acc_train, acc_val, acc_test, loss_val, auc_val
 
     # ---- Training loop ----
+    test_results = []
     start_time = time.time()
     best_val_acc = 0
     best_test_acc = 0
@@ -156,8 +164,9 @@ def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
     for epoch in range(1, max_epochs + 1):
         epoch_start = time.time()
 
+        # ---- Training ----
         loss_train, out = train()
-        acc_train, acc_val, _, loss_val, auc_val = test(out)  # only compute train+val acc for per-epoch print
+        acc_train, acc_val, _, loss_val, auc_val = test(out)
 
         epoch_time = time.time() - epoch_start
         reach_time = time.time() - start_time
@@ -167,32 +176,53 @@ def run_experiment(chosen_dataset, device, hidden_units=64, dropout_rate=0.5,
             best_val_acc = acc_val
             best_test_acc = eval_metrics(out, node_test_ids, y_test)
 
-        # Epoch print
-        print(f"Epoch: {epoch:04d} | loss_train: {loss_train:.4f} | acc_train: {acc_train:.4f} | "
-              f"loss_val: {loss_val:.4f} | acc_val: {acc_val:.4f} | auc_val: {auc_val:.4f} | "
-              f"time_taken: {epoch_time:.4f}s | reach_time: {reach_time:.4f}s")
+        # Per-epoch print
+        logger.info(
+            f"Epoch: {epoch:04d} | loss_train: {loss_train:.4f} | acc_train: {acc_train:.4f} | "
+            f"loss_val: {loss_val:.4f} | acc_val: {acc_val:.4f} | auc_val: {auc_val:.4f} | "
+            f"time_taken: {epoch_time:.4f}s | reach_time: {reach_time:.4f}s"
+        )
 
-        # Full test evaluation every 100 epochs
+        # ---- Full test evaluation every 100 epochs ----
         if epoch % 100 == 0:
-            acc_test = eval_metrics(out, node_test_ids, y_test)
             loss_test = loss_fn(out[node_test_ids], y_test).item()
-
-            # Detach before converting to numpy
+            acc_test = eval_metrics(out, node_test_ids, y_test)
             auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
+            test_time = time.time() - start_time
 
-            print(
+            logger.info(
                 f"[Test evaluation at epoch {epoch}] loss= {loss_test:.4f} | "
                 f"accuracy= {acc_test:.4f} | auc= {auc_test:.4f}"
             )
 
-    # Final test print
+            # Store test result
+            test_results.append({
+                "epoch": epoch,
+                "loss": loss_test,
+                "accuracy": acc_test,
+                "auc": auc_test,
+                "time": test_time
+            })
+
+    # ---- Final evaluation ----
     total_time = time.time() - start_time
     out = model(data.x, data.edge_index)
-    acc_test = eval_metrics(out, node_test_ids, y_test)
     loss_test = loss_fn(out[node_test_ids], y_test).item()
+    acc_test = eval_metrics(out, node_test_ids, y_test)
     auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
-    print(
-        f"Final Test set results: loss= {loss_test:.4f} | accuracy= {acc_test:.4f} | auc= {auc_test:.4f} | total time= {total_time:.2f}s")
+
+    logger.info(
+        f"Final Test set results: loss= {loss_test:.4f} | accuracy= {acc_test:.4f} | "
+        f"auc= {auc_test:.4f} | total time= {total_time:.2f}s"
+    )
+
+    # Write experiment summary
+    filename = write_experiment_summary(args, test_results, total_time)
+
+    if logger:
+        logger.info(f"Results written to {filename}")
+
+    return test_results, filename
 
 if __name__ == "__main__":
     args = get_args()
@@ -221,10 +251,13 @@ if __name__ == "__main__":
 
     run_experiment(
         args.d,
+        args.model,
         device,
+        args.bag_ratio,
         hidden_units=args.hidden,
         dropout_rate=args.dropout,
         lr=args.lr,
         weight_decay=args.weight_decay,
-        max_epochs=args.epochs
+        max_epochs=args.epochs,
+        logger=logger
     )
