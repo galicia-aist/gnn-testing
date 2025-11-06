@@ -1,22 +1,21 @@
-import argparse
+# === Standard Library ===
 import random
-import torch.multiprocessing as mp
-import torch
+import time
+
+# === Third-Party Libraries ===
 import numpy as np
-from torch_geometric.datasets import Planetoid, CitationFull, Reddit
-from utils import *
-from torch_geometric.loader import NeighborLoader
-from torch.utils.data.distributed import DistributedSampler
-from sgc import SGC, train, evaluate
-from gcn import GCN
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+# === Local Modules ===
 from data_loader import get_training_data
+from gcn import GCN
+from sgc import SGC, train, evaluate
+from utils import *
 
 
 def main(rank, world_size, args, device, logger=None):
-    batch_size_train = 1024
-    batch_size_test = 2048
 
     logger.debug("before loading data")
 
@@ -24,66 +23,28 @@ def main(rank, world_size, args, device, logger=None):
 
     logger.debug("after loading data")
 
-    if args.dataset == "Reddit":
-        if args.ddp:
-            train_sampler = DistributedSampler(
-                data.train_mask.nonzero().squeeze(),  # Get only training indices
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=True
-            )
+    train_loader, eval_loader, test_loader = get_loaders(args, data, world_size=world_size, rank=rank, logger=logger)
 
-            test_sampler = DistributedSampler(
-                data.test_mask.nonzero().squeeze(),  # Get only test indices
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=False
-            )
-
-            train_loader = NeighborLoader(
-                data,
-                num_neighbors=[10, 10],  # Sample 10 neighbors per layer
-                batch_size=batch_size_train,
-                input_nodes=data.train_mask,
-                sampler=train_sampler  # Ensure each GPU only gets a part of the dataset
-            )
-
-            test_loader = NeighborLoader(
-                data,
-                num_neighbors=[10, 10],
-                batch_size=batch_size_test,
-                input_nodes=data.test_mask,
-                sampler=test_sampler  # Ensure correct test distribution
-            )
-        else:
-            train_loader = NeighborLoader(
-                data,
-                num_neighbors=[10, 10],  # Sample 10 neighbors per layer
-                batch_size=batch_size_train,
-                input_nodes=data.train_mask
-            )
-
-            test_loader = NeighborLoader(
-                data,
-                num_neighbors=[10, 10],
-                batch_size=batch_size_test,
-                input_nodes=data.test_mask
-            )
-    else:
-        train_loader = None
-        test_loader = None
     if args.model == "GCN":
         model = GCN(data, args.hidden).to(device)
-    else:
+    elif args.model == "GCN":
         model = SGC(data).to(device)
+    else:
+        quit("No model selected")
+
+
     if args.ddp:
         model = DDP(model, device_ids=[rank], output_device=rank)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for epoch in range(1, args.epochs):
+        start_time = time.time()
+
         loss = train(model, optimizer, device, data, train_loader=train_loader, dataset_name=args.dataset)
-        logger.debug(f'Epoch {epoch}: Loss: {loss:.4f}')
+
+        elapsed = time.time() - start_time
+        logger.info(f"Epoch {epoch}: Loss: {loss:.4f} | Time: {elapsed:.2f}s")
 
     if args.ddp:
         dist.barrier()
