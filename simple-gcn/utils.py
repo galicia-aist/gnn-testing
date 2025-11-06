@@ -12,7 +12,7 @@ def get_args():
     # Core experiment setup
     parser.add_argument('--model', type=str, choices=['GCN', 'SGC'], required=True, help='Instance or Embedding model')
     parser.add_argument('--dataset', type=str, required=True,
-                        choices=['Cora', 'CiteSeer', 'PubMed', 'CoraFull', 'CiteseerFull', 'PubMedFull', 'Reddit'],
+                        choices=['Cora', 'CiteSeer', 'PubMed', 'CoraFull', 'CiteseerFull', 'PubMedFull', 'Reddit', 'Products', 'Arxiv', 'Mag'],
                         help='Dataset to use')
     # Training configuration
     parser.add_argument('--epochs', type=int, default=500, help='Number of epochs to train.')
