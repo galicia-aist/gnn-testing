@@ -1,0 +1,101 @@
+{
+  "model": {
+    "type": "str",
+    "choices": ["gcn", "gat", "sage"],
+    "required": true,
+    "help": "Choose model from GCN, GAT, SAGE"
+  },
+  "d": {
+    "type": "str",
+    "choices": ["coraml", "citeseer", "photo", "actor", "reddit", "arxiv"],
+    "required": true,
+    "help": "Dataset to use (coraml=Cora-ML, citeseer=CiteSeer, photo=Amazon-Photo, actor=Actor, reddit=Reddit, arxiv=OGB Arxiv)."
+  },
+  "mode": {
+    "type": "int",
+    "required": true,
+    "help": "Mode parameter. 1 for collective MIL. 2 for standard MIL."
+  },
+  "class_type": {
+    "type": "str",
+    "choices": ["node", "bag"],
+    "required": true,
+    "help": "Classification type"
+  },
+  "pool": {
+    "type": "str",
+    "choices": ["sum", "mean", "max", "attention", "set2set", "default"],
+    "required": true,
+    "help": "Graph pooling type."
+  },
+  "epochs": {
+    "type": "int",
+    "default": 500,
+    "help": "Number of epochs to train."
+  },
+  "bag_ratio": {
+    "type": "float",
+    "default": 0.8,
+    "help": "Inner bag ratio of positive and negative labels"
+  },
+  "lr": {
+    "type": "float",
+    "default": 0.01,
+    "help": "Initial learning rate."
+  },
+  "weight_decay": {
+    "type": "float",
+    "default": 0.0005,
+    "help": "Weight decay (L2 loss on parameters)."
+  },
+  "hidden": {
+    "type": "int",
+    "default": 16,
+    "help": "Number of hidden units."
+  },
+  "dropout": {
+    "type": "float",
+    "default": 0.5,
+    "help": "Dropout rate (1 - keep probability)."
+  },
+  "cuda": {
+    "action": "store_true",
+    "help": "Enable CUDA training (default: False)."
+  },
+  "fastmode": {
+    "action": "store_true",
+    "default": false,
+    "help": "Validate during training pass."
+  },
+  "ddp": {
+    "action": "store_true",
+    "default": false,
+    "help": "Use Distributed Data Parallelism."
+  },
+  "seed": {
+    "type": "int",
+    "default": 42,
+    "help": "Random seed."
+  },
+  "log_level": {
+    "type": "str",
+    "choices": ["debug", "info", "warning", "error", "critical"],
+    "default": "info",
+    "help": "Logging level."
+  },
+  "log_path": {
+    "type": "str",
+    "default": "local",
+    "help": "Path to store logs. Default is 'local'."
+  },
+  "gamma": {
+    "type": "float",
+    "default": 0.5,
+    "help": "Gamma parameter."
+  },
+  "rho": {
+    "type": "float",
+    "default": 1.0,
+    "help": "Rho parameter."
+  }
+}

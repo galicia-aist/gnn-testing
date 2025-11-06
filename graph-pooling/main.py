@@ -4,7 +4,7 @@ from torch_geometric.datasets import CitationFull, Amazon, Actor
 from models import GCN, GAT, GraphSAGE
 from sklearn.metrics import roc_auc_score
 from utils import *
-
+from shared.utils import *
 
 
 def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42):

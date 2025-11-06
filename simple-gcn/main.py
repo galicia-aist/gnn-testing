@@ -13,6 +13,7 @@ from data_loader import get_training_data
 from gcn import GCN
 from sgc import SGC, train, evaluate
 from utils import *
+from shared.utils import *
 
 
 def main(rank, world_size, args, device, logger=None):
