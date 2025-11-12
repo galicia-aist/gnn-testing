@@ -38,13 +38,13 @@ def get_loaders(args, data, world_size=1, rank=0, logger=None):
                     shuffle=shuffle
                 )
 
-            train_loader = make_loader(data.train_mask, [-1, -1], True, make_sampler(data.train_mask, True))
+            train_loader = make_loader(data.train_mask, [10, 5], True, make_sampler(data.train_mask, True))
             val_loader = make_loader(data.val_mask, [25, 10], True, make_sampler(data.val_mask, True))
             test_loader = make_loader(data.test_mask, [25, 10], False, make_sampler(data.test_mask, False))
 
         else:
             # --- Regular loaders ---
-            train_loader = make_loader(data.train_mask, [10, 5], True)
+            train_loader = make_loader(data.train_mask, [5, 4], True)
             val_loader = make_loader(data.val_mask, [25, 10], False)
             test_loader = make_loader(data.test_mask, [25, 10], False)
 

@@ -7,7 +7,7 @@ import argparse
 # --- Argument parser ---
 parser = argparse.ArgumentParser(description="Plot efficiency of a dataset with optional zoom.")
 parser.add_argument('--dataset', type=str, required=True,
-                    choices=['coraml', 'citeseer', 'photo', 'actor'],
+                    choices=['coraml', 'citeseer', 'photo', 'actor', 'arxiv'],
                     help="Dataset to plot.")
 parser.add_argument('--zoom_x', type=float, nargs=2, default=None,
                     help="Optional zoom range for X axis (time), e.g., 60 80")
@@ -27,22 +27,37 @@ os.makedirs(output_dir, exist_ok=True)
 # --- Load data ---
 df = pd.read_csv(input_csv)
 
-# Ensure correct types
+# --- Type cleanup ---
 df['bag_ratio'] = df['bag_ratio'].astype(float).round(1)
 df['epoch'] = df['epoch'].astype(int)
 df['time'] = df['time'].astype(float)
 df['model'] = df['model'].str.lower()
+df['pool'] = df['pool'].str.lower()
 
-# Keep only allowed models
-allowed_models = ['gcn', 'gat', 'sage']
-df = df[df['model'].isin(allowed_models)]
+# --- Combine model + pooling for "ins" variants ---
+df['model_id'] = df.apply(
+    lambda r: f"{r['model']}-{r['pool']}" if r['model'] == 'ins' else r['model'],
+    axis=1
+)
 
-# --- Define colors for models ---
+# --- Allowed models ---
+allowed_models = [
+    'gcn', 'gat', 'sage',
+    'ins-sum', 'ins-mean', 'ins-attention', 'ins-set2set'
+]
+df = df[df['model_id'].isin(allowed_models)]
+
+# --- Define colors ---
 model_colors = {
     'gcn': 'tab:blue',
     'gat': 'tab:green',
-    'sage': 'tab:orange'
+    'sage': 'tab:orange',
+    'ins-sum': 'tab:pink',
+    'ins-mean': 'tab:olive',
+    'ins-attention': 'tab:cyan',
+    'ins-set2set': 'tab:purple'
 }
+
 
 # Define markers for bag ratios
 ratio_markers = {
@@ -59,11 +74,11 @@ data_subset = df[df['dataset'] == dataset]
 fig, ax = plt.subplots(figsize=(8, 6))
 
 # Group by (model, bag_ratio) for connected lines
-for (model, bag_ratio), group in data_subset.groupby(['model', 'bag_ratio']):
+for (model_id, bag_ratio), group in data_subset.groupby(['model_id', 'bag_ratio']):
     group = group.sort_values('time')
-    color = model_colors.get(model, 'gray')
+    color = model_colors.get(model_id, 'gray')
     marker = ratio_markers.get(bag_ratio, 'x')
-    label = f"{int(bag_ratio)}% ratio with {model.upper()}"
+    label = f"{int(bag_ratio)}% ratio with {model_id.upper()}"
 
     ax.plot(
         group['time'],

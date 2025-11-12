@@ -53,7 +53,7 @@ def load_data(d):
     elif d.lower() == "reddit":
         dataset = Reddit(root='../datasets/reddit/')
     elif d.lower() == "arxiv":
-        dataset = PygNodePropPredDataset(name="ogbn-arxiv", root='./datasets/')
+        dataset = PygNodePropPredDataset(name="ogbn-arxiv", root='../datasets/')
     device = torch.device('cpu')
     dataset = dataset[0].to(device)
 

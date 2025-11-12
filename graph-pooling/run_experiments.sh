@@ -1,4 +1,8 @@
 #!/bin/bash
+
+eval "$(/mnt/miniconda3/bin/conda shell.bash hook)"
+conda activate graph-pooling-v1
+
 # Loop-based script to run all experiments
 
 # ====== CONFIGURATION ======
@@ -41,7 +45,7 @@ elif [ "$experiment_type" == "bag_ratios" ]; then
             for pool in "${pools[@]}"; do
                 for model in "${models[@]}"; do
                     echo "Running: model=$model, pool=$pool, dataset=$d, bag_ratio=$ratio"
-                    python train_bag_binary.py --model="$model" \
+                    python main.py --model="$model" \
                         --log_level=debug \
                         --pool="$pool" \
                         --d="$d" \

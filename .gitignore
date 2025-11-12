@@ -9,6 +9,7 @@ logs/
 datasets/
 results_plotted/
 results/
+old_stuff/
 
 # Config
 global_settings.json

@@ -1,11 +1,17 @@
+# --- Standard library imports ---
+import sys
 import math
 import time
-from torch_geometric.datasets import CitationFull, Amazon, Actor
-from models import GCN, GAT, GraphSAGE
+
+# --- Third-party libraries ---
 from sklearn.metrics import roc_auc_score
+
+# --- Local project modules ---
+from models import GCN, GAT, GraphSAGE
 from utils import *
 from shared.utils import *
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42):
     bag_node = dict()
