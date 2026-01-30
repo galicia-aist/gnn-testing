@@ -9,14 +9,13 @@ from sklearn.metrics import roc_auc_score
 # --- Local project modules ---
 from models import GCN, GAT, GraphSAGE
 from utils import *
-from shared.utils import *
+from trainers import train, test, process_with_loader
+# from shared.utils import *
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42):
     bag_node = dict()
-    random.seed(seed)
-    torch.manual_seed(seed)
 
     # internal node ratio for positive and negative bags
     bag_neg_ratio = 1 - bag_pos_ratio
@@ -74,7 +73,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     dataset = load_data(chosen_dataset)
 
     # Pick a chosen class for binary classification
-    chosen_label = 0
+
     if chosen_dataset.lower() == "arxiv":
         labels = encode_onehot(dataset.y.squeeze().numpy())
     else:
@@ -83,6 +82,8 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     labels = torch.LongTensor(np.where(labels)[1])
 
     num_class = labels.max().item() + 1
+    rand = random.random()
+    chosen_label = random.randint(0, num_class - 1)
     label_node= dict()
     label_non_node = dict()
     for i in range(num_class):
@@ -114,6 +115,21 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     node_test_ids = torch.tensor([k[0] for k in node_eva_keys[split:]], dtype=torch.long, device=device)
     y_test = torch.tensor([node_eva[k] for k in node_eva_keys[split:]], dtype=torch.float, device=device)
 
+    if chosen_dataset.lower() == "reddit":
+        train_mask = make_input_nodes(node_train_ids.cpu(), dataset.num_nodes)
+        val_mask = make_input_nodes(node_val_ids.cpu(), dataset.num_nodes)
+        test_mask = make_input_nodes(node_test_ids.cpu(), dataset.num_nodes)
+
+        dataset.train_mask = train_mask
+        dataset.val_mask = val_mask
+        dataset.test_mask = test_mask
+
+        train_loader, val_loader, test_loader = get_loaders(
+            args, dataset, logger=logger
+        )
+    else:
+        train_loader = val_loader = test_loader = None
+
     labels_eva = []
     key_list = list(node_eva.keys())
     for i in range(len(node_eva)):
@@ -122,7 +138,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     labels_eva = torch.LongTensor(labels_eva)
 
     # ---- GCN training same as before ----
-    data = dataset
+    data = dataset.to(device)
     if chosen_model.lower() == "gcn":
         model = GCN(dataset.num_features, hidden_units, dropout_rate).to(device)
     elif chosen_model.lower() == "gat":
@@ -135,32 +151,6 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = torch.nn.BCEWithLogitsLoss()
 
-    def train():
-        model.train()
-        optimizer.zero_grad()
-        out = model(data.x, data.edge_index)
-        loss = loss_fn(out[node_train_ids], y_train)
-        loss.backward()
-        optimizer.step()
-        return loss.item(), out
-
-    @torch.no_grad()
-    def test(out):
-        model.eval()
-
-        # Accuracies
-        acc_train = eval_metrics(out, node_train_ids, y_train)
-        acc_val = eval_metrics(out, node_val_ids, y_val)
-        acc_test = eval_metrics(out, node_test_ids, y_test)
-
-        # Validation AUC
-        auc_val = roc_auc_score(y_val.cpu().numpy(), out[node_val_ids].cpu().numpy())
-
-        # Validation loss
-        loss_val = loss_fn(out[node_val_ids], y_val).item()
-
-        return acc_train, acc_val, acc_test, loss_val, auc_val
-
     # ---- Training loop ----
     test_results = []
     start_time = time.time()
@@ -171,8 +161,18 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
         epoch_start = time.time()
 
         # ---- Training ----
-        loss_train, out = train()
-        acc_train, acc_val, _, loss_val, auc_val = test(out)
+        if train_loader is None:
+            loss_train, out = train(model, optimizer, loss_fn, data, node_train_ids, y_train)
+            acc_train, acc_val, _, loss_val, auc_val = test(model, out, node_train_ids, node_val_ids, node_test_ids,
+                                                            y_train, y_val, y_test, loss_fn)
+        else:
+            loss_train, acc_train, _ = process_with_loader(train_loader, model, node_train_ids, y_train, loss_fn, device,
+                                                           mode="train", optimizer=optimizer, compute_auc=False, logger=None)
+            loss_val, acc_val, auc_val = process_with_loader(val_loader, model, node_val_ids, y_val, loss_fn,
+                                                           device, mode="val", optimizer=optimizer, compute_auc=True,
+                                                           logger=None)
+
+
 
         epoch_time = time.time() - epoch_start
         reach_time = time.time() - start_time
@@ -180,7 +180,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
         # Update best
         if acc_val > best_val_acc:
             best_val_acc = acc_val
-            best_test_acc = eval_metrics(out, node_test_ids, y_test)
+            # best_test_acc = eval_metrics(out, node_test_ids, y_test)
 
         # Per-epoch print
         logger.info(
@@ -191,9 +191,16 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
 
         # ---- Full test evaluation every 100 epochs ----
         if epoch % 100 == 0:
-            loss_test = loss_fn(out[node_test_ids], y_test).item()
-            acc_test = eval_metrics(out, node_test_ids, y_test)
-            auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
+            if test_loader is None:
+                loss_test = loss_fn(out[node_test_ids], y_test).item()
+                acc_test = eval_metrics(out, node_test_ids, y_test)
+                auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
+            else:
+                loss_test, acc_test, auc_test = process_with_loader(test_loader, model, node_test_ids, y_test, loss_fn,
+                                                                 device, mode="test", optimizer=optimizer,
+                                                                 compute_auc=True,
+                                                                 logger=None)
+
             test_time = time.time() - start_time
 
             logger.info(
@@ -212,11 +219,16 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
 
     # ---- Final evaluation ----
     total_time = time.time() - start_time
-    out = model(data.x, data.edge_index)
-    loss_test = loss_fn(out[node_test_ids], y_test).item()
-    acc_test = eval_metrics(out, node_test_ids, y_test)
-    auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
-
+    if test_loader is None:
+        out = model(data.x, data.edge_index)
+        loss_test = loss_fn(out[node_test_ids], y_test).item()
+        acc_test = eval_metrics(out, node_test_ids, y_test)
+        auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
+    else:
+        loss_test, acc_test, auc_test = process_with_loader(test_loader, model, node_test_ids, y_test, loss_fn,
+                                                            device, mode="test", optimizer=optimizer,
+                                                            compute_auc=True,
+                                                            logger=None)
     logger.info(
         f"Final Test set results: loss= {loss_test:.4f} | accuracy= {acc_test:.4f} | "
         f"auc= {auc_test:.4f} | total time= {total_time:.2f}s"
@@ -251,6 +263,11 @@ if __name__ == "__main__":
     logger = get_logger()
 
     log_experiment_settings(logger, args)
+
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    rand = random.random()
 
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
