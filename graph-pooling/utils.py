@@ -59,8 +59,8 @@ def load_data(d):
         dataset = Actor(root='../datasets/actor/')
     elif d.lower() == "reddit":
         dataset = Reddit(root='../datasets/reddit/')
-    elif d.lower() == "arxiv":
-        dataset = PygNodePropPredDataset(name="ogbn-arxiv", root='../datasets/')
+    elif d.lower() == "arxiv" or "products":
+        dataset = PygNodePropPredDataset(name=f"ogbn-{d.lower()}", root='../datasets/')
     device = torch.device('cpu')
     dataset = dataset[0].to(device)
 
@@ -282,54 +282,78 @@ def get_loaders(args, data, world_size=1, rank=0, logger=None):
     Returns:
         train_loader, val_loader, test_loader
     """
-    if args.d == "reddit":
-        def make_loader(mask, neighbors, shuffle, sampler=None):
-            return NeighborLoader(
-                data,
-                num_neighbors=neighbors,
-                input_nodes=mask,
-                batch_size=4096,
-                shuffle=shuffle,
-                sampler=sampler
+    def make_loader(mask, neighbors, shuffle, sampler=None):
+        return NeighborLoader(
+            data,
+            num_neighbors=neighbors,
+            input_nodes=mask,
+            batch_size=4096,
+            shuffle=shuffle,
+            sampler=sampler
+        )
+
+    if getattr(args, "ddp", False):
+        # --- Distributed samplers ---
+        def make_sampler(mask, shuffle):
+            return DistributedSampler(
+                mask.nonzero().squeeze(),
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=shuffle
             )
 
-        if getattr(args, "ddp", False):
-            # --- Distributed samplers ---
-            def make_sampler(mask, shuffle):
-                return DistributedSampler(
-                    mask.nonzero().squeeze(),
-                    num_replicas=world_size,
-                    rank=rank,
-                    shuffle=shuffle
-                )
-
-            train_loader = make_loader(data.train_mask, [10, 5], True, make_sampler(data.train_mask, True))
-            val_loader = make_loader(data.val_mask, [25, 10], True, make_sampler(data.val_mask, True))
-            test_loader = make_loader(data.test_mask, [25, 10], False, make_sampler(data.test_mask, False))
-
-        else:
-            # --- Regular loaders ---
-            train_loader = make_loader(data.train_mask, [25, 10], True)
-            val_loader = make_loader(data.val_mask, [25, 10], False)
-            test_loader = make_loader(data.test_mask, [25, 10], False)
-
-            # Get the root logger
-            root_logger = logging.getLogger()
-
-            # Remove any handlers attached to the root logger
-            if root_logger.hasHandlers():
-                root_logger.handlers.clear()
-
-            logger.debug(f"Train loader batches: {len(train_loader)}")
-            logger.debug(f"Validation loader batches: {len(val_loader)}")
-            logger.debug(f"Test loader batches: {len(test_loader)}")
-
-        return train_loader, val_loader, test_loader
+        train_loader = make_loader(data.train_mask, [10, 5], True, make_sampler(data.train_mask, True))
+        val_loader = make_loader(data.val_mask, [25, 10], True, make_sampler(data.val_mask, True))
+        test_loader = make_loader(data.test_mask, [25, 10], False, make_sampler(data.test_mask, False))
 
     else:
-        return None, None, None
+        # --- Regular loaders ---
+        train_loader = make_loader(data.train_mask, [25, 10], True)
+        val_loader = make_loader(data.val_mask, [25, 10], False)
+        test_loader = make_loader(data.test_mask, [25, 10], False)
+
+        # Get the root logger
+        root_logger = logging.getLogger()
+
+        # Remove any handlers attached to the root logger
+        if root_logger.hasHandlers():
+            root_logger.handlers.clear()
+
+        logger.debug(f"Train loader batches: {len(train_loader)}")
+        logger.debug(f"Validation loader batches: {len(val_loader)}")
+        logger.debug(f"Test loader batches: {len(test_loader)}")
+
+        return train_loader, val_loader, test_loader
 
 def make_input_nodes(node_ids, num_nodes):
     mask = torch.zeros(num_nodes, dtype=torch.bool)
     mask[node_ids] = True
     return mask
+
+def split_labels(labels, num_class):
+    """
+    Splits node indices into label-wise dictionaries of nodes and non-nodes.
+
+    Args:
+        labels (torch.Tensor): 1D tensor of node labels.
+
+    Returns:
+        label_node (dict): Keys are label IDs, values are lists of node indices with that label.
+        label_non_node (dict): Keys are label IDs, values are lists of node indices NOT having that label.
+    """
+
+    label_node = {i: [] for i in range(num_class)}
+    label_non_node = {i: [] for i in range(num_class)}
+
+    # Assign nodes to their labels
+    for i in range(labels.shape[0]):
+        label_id = labels[i].item()
+        label_node[label_id].append(i)
+
+    # Assign nodes to non-label lists
+    for i in range(num_class):
+        for j in range(num_class):
+            if j != i:
+                label_non_node[i] += label_node[j]
+
+    return label_node, label_non_node

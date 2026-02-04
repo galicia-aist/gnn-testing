@@ -9,72 +9,21 @@ from sklearn.metrics import roc_auc_score
 # --- Local project modules ---
 from models import GCN, GAT, GraphSAGE
 from utils import *
+from bag_creation import get_eval_nodes
 from trainers import train, test, process_with_loader
 # from shared.utils import *
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42):
-    bag_node = dict()
 
-    # internal node ratio for positive and negative bags
-    bag_neg_ratio = 1 - bag_pos_ratio
-
-    pos_count = 0
-    neg_count = 0
-
-    for i in range(m):  # m = number of bags
-        # randomly decide if the bag is positive or negative
-        make_positive = random.random() < 0.5  # 50% chance
-
-        if make_positive:
-            p = math.ceil(n * bag_pos_ratio)  # number of positive nodes
-        else:
-            p = math.ceil(n * bag_neg_ratio)  # number of positive nodes for negative bag
-
-        q = n - p  # remaining nodes are negative
-
-        # select nodes
-        selected_node = random.sample(label_node[chosen_label], p) + \
-                        random.sample(label_non_node[chosen_label], q)
-
-        # shuffle nodes inside the bag
-        random.shuffle(selected_node)
-
-        # assign bag label based on intended positive/negative
-        positive = 1 if make_positive else 0
-
-        bag_node[tuple(selected_node)] = positive
-
-        # update counters
-        if positive == 1:
-            pos_count += 1
-        else:
-            neg_count += 1
-
-    print(f"Mode 3: Number of positive bags = {pos_count}, Number of negative bags = {neg_count}")
-
-    node_train = get_flattened_nodes(bag_node, chosen_label, labels, 0, 300)
-    node_eva = get_flattened_nodes(bag_node, chosen_label, labels, 300, 500)
-
-    b = len(node_train)
-    c = len(node_eva)
-    d = int(0.5 * c)
-    idx_val = torch.LongTensor(range(d))
-    idx_test = torch.LongTensor(range(d, c))
-    idx_train = torch.LongTensor(range(b))
-
-    return idx_train, idx_val, idx_test, node_train, node_eva
-
-
-def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units=64, dropout_rate=0.5,
-                   lr=0.01, weight_decay=5e-4, max_epochs=500, logger=None):
+def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer, test_interval, hidden_units=64,
+                   dropout_rate=0.5, lr=0.01, weight_decay=5e-4, max_epochs=500, logger=None):
 
     dataset = load_data(chosen_dataset)
 
     # Pick a chosen class for binary classification
 
-    if chosen_dataset.lower() == "arxiv":
+    if chosen_dataset.lower() in {"arxiv", "products"}:
         labels = encode_onehot(dataset.y.squeeze().numpy())
     else:
         labels = encode_onehot(dataset.y.numpy())
@@ -82,20 +31,9 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     labels = torch.LongTensor(np.where(labels)[1])
 
     num_class = labels.max().item() + 1
-    rand = random.random()
     chosen_label = random.randint(0, num_class - 1)
-    label_node= dict()
-    label_non_node = dict()
-    for i in range(num_class):
-        label_node[i] = []
-        label_non_node[i] = []
-    for i in range(labels.shape[0]):
-        label_id = labels[i].item()
-        label_node[label_id].append(i)
-    for i in range(num_class):
-        for j in range(num_class):
-            if j != i:
-                label_non_node[i] += label_node[j]
+
+    label_node, label_non_node = split_labels(labels, num_class)
 
     m = 500  # number of bag (node-level tasks)
     n = 2  # number of instances within a bag (node-level standard MIL)
@@ -115,7 +53,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     node_test_ids = torch.tensor([k[0] for k in node_eva_keys[split:]], dtype=torch.long, device=device)
     y_test = torch.tensor([node_eva[k] for k in node_eva_keys[split:]], dtype=torch.float, device=device)
 
-    if chosen_dataset.lower() == "reddit":
+    if chosen_dataset.lower() in {"reddit", "products"}:
         train_mask = make_input_nodes(node_train_ids.cpu(), dataset.num_nodes)
         val_mask = make_input_nodes(node_val_ids.cpu(), dataset.num_nodes)
         test_mask = make_input_nodes(node_test_ids.cpu(), dataset.num_nodes)
@@ -140,11 +78,11 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
     # ---- GCN training same as before ----
     data = dataset.to(device)
     if chosen_model.lower() == "gcn":
-        model = GCN(dataset.num_features, hidden_units, dropout_rate).to(device)
+        model = GCN(dataset.num_features, hidden_units, dropout_rate, single_layer=single_layer).to(device)
     elif chosen_model.lower() == "gat":
-        model = GAT(dataset.num_features, hidden_units, dropout_rate, heads=1).to(device)  # adjust heads if needed
+        model = GAT(dataset.num_features, hidden_units, dropout_rate, single_layer=single_layer, heads=1).to(device)  # adjust heads if needed
     elif chosen_model.lower() == "sage":
-        model = GraphSAGE(dataset.num_features, hidden_units, dropout_rate).to(device)
+        model = GraphSAGE(dataset.num_features, hidden_units, dropout_rate, single_layer=single_layer).to(device)
     else:
         raise ValueError(f"Unknown model type: {args.model}")
 
@@ -190,7 +128,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, hidden_units
         )
 
         # ---- Full test evaluation every 100 epochs ----
-        if epoch % 100 == 0:
+        if epoch % test_interval == 0:
             if test_loader is None:
                 loss_test = loss_fn(out[node_test_ids], y_test).item()
                 acc_test = eval_metrics(out, node_test_ids, y_test)
@@ -267,8 +205,6 @@ if __name__ == "__main__":
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    rand = random.random()
-
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
 
@@ -277,6 +213,8 @@ if __name__ == "__main__":
         args.model,
         device,
         args.bag_ratio,
+        args.single_layer,
+        args.test_interval,
         hidden_units=args.hidden,
         dropout_rate=args.dropout,
         lr=args.lr,
