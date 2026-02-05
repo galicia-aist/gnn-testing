@@ -3,7 +3,7 @@ import random
 import torch
 from utils import get_flattened_nodes
 
-def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42):
+def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42, logger=None):
     bag_node = dict()
 
     # internal node ratio for positive and negative bags
@@ -41,7 +41,10 @@ def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_p
         else:
             neg_count += 1
 
-    print(f"Mode 3: Number of positive bags = {pos_count}, Number of negative bags = {neg_count}")
+    assert len(
+        bag_node) == m, f"Only {len(bag_node)}/{m} unique bags generated — duplicates detected. Try a different seed or a different chosen_label."
+
+    logger.debug(f"Mode 3: Number of positive bags = {pos_count}, Number of negative bags = {neg_count}")
 
     node_train = get_flattened_nodes(bag_node, chosen_label, labels, 0, 300)
     node_eva = get_flattened_nodes(bag_node, chosen_label, labels, 300, 500)

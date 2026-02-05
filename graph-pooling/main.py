@@ -40,7 +40,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
 
     # Pick a chosen class and consistent evaluation nodes
 
-    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, bag_ratio, seed=42)
+    _, _, _, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, bag_ratio, seed=42)
 
     node_train_ids = torch.tensor([k[0] for k in node_train.keys()], dtype=torch.long, device=device)
     y_train = torch.tensor(list(node_train.values()), dtype=torch.float, device=device)
