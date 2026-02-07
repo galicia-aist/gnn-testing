@@ -10,13 +10,13 @@ from sklearn.metrics import roc_auc_score
 from models import GCN, GAT, GraphSAGE
 from utils import *
 from bag_creation import get_eval_nodes
-from trainers import train, test, process_with_loader
+from trainers import train, evaluate, process_with_loader
 # from shared.utils import *
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer, test_interval, hidden_units=64,
+def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer, val_interval, test_interval, hidden_units=64,
                    dropout_rate=0.5, lr=0.01, weight_decay=5e-4, max_epochs=500, logger=None):
 
     dataset = load_data(chosen_dataset)
@@ -40,18 +40,19 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
 
     # Pick a chosen class and consistent evaluation nodes
 
-    _, _, _, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, bag_ratio, seed=42)
+    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, bag_ratio, logger=logger)
 
-    node_train_ids = torch.tensor([k[0] for k in node_train.keys()], dtype=torch.long, device=device)
-    y_train = torch.tensor(list(node_train.values()), dtype=torch.float, device=device)
+    node_train_keys = list(node_train.keys())
+    node_eva_keys = list(node_eva.keys())
+
+    node_train_ids = torch.tensor([node_train_keys[i][0] for i in idx_train], dtype=torch.long, device=device)
+    y_train = torch.tensor([node_train[node_train_keys[i]] for i in idx_train], dtype=torch.float, device=device)
 
     # split node_eva into val/test
-    node_eva_keys = list(node_eva.keys())
-    split = len(node_eva_keys) // 2
-    node_val_ids = torch.tensor([k[0] for k in node_eva_keys[:split]], dtype=torch.long, device=device)
-    y_val = torch.tensor([node_eva[k] for k in node_eva_keys[:split]], dtype=torch.float, device=device)
-    node_test_ids = torch.tensor([k[0] for k in node_eva_keys[split:]], dtype=torch.long, device=device)
-    y_test = torch.tensor([node_eva[k] for k in node_eva_keys[split:]], dtype=torch.float, device=device)
+    node_val_ids = torch.tensor( [node_eva_keys[i][0] for i in idx_val], dtype=torch.long, device=device)
+    y_val = torch.tensor([node_eva[node_eva_keys[i]] for i in idx_val], dtype=torch.float, device=device)
+    node_test_ids = torch.tensor([node_eva_keys[i][0] for i in idx_test], dtype=torch.long, device=device)
+    y_test = torch.tensor([node_eva[node_eva_keys[i]] for i in idx_test], dtype=torch.float, device=device)
 
     if chosen_dataset.lower() in {"reddit", "products"}:
         train_mask = make_input_nodes(node_train_ids.cpu(), dataset.num_nodes)
@@ -67,13 +68,6 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
         )
     else:
         train_loader = val_loader = test_loader = None
-
-    labels_eva = []
-    key_list = list(node_eva.keys())
-    for i in range(len(node_eva)):
-        key = key_list[i]
-        labels_eva.append(node_eva[key])
-    labels_eva = torch.LongTensor(labels_eva)
 
     # ---- GCN training same as before ----
     data = dataset.to(device)
@@ -99,17 +93,13 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
         epoch_start = time.time()
 
         # ---- Training ----
-        if train_loader is None:
-            loss_train, out = train(model, optimizer, loss_fn, data, node_train_ids, y_train)
-            acc_train, acc_val, _, loss_val, auc_val = test(model, out, node_train_ids, node_val_ids, node_test_ids,
-                                                            y_train, y_val, y_test, loss_fn)
-        else:
-            loss_train, acc_train, _ = process_with_loader(train_loader, model, node_train_ids, y_train, loss_fn, device,
-                                                           mode="train", optimizer=optimizer, compute_auc=False, logger=None)
-            loss_val, acc_val, auc_val = process_with_loader(val_loader, model, node_val_ids, y_val, loss_fn,
-                                                           device, mode="val", optimizer=optimizer, compute_auc=True,
-                                                           logger=None)
+        loss_train, acc_train = train(model, optimizer, loss_fn, data, node_train_ids, y_train, loader=train_loader,
+                                      device=device)
 
+        # ---- Validation ----
+        if epoch % val_interval == 0:
+            loss_val, acc_val, auc_val = evaluate(model, loss_fn, data, node_val_ids, y_val, loader=val_loader,
+                                      device=device)
 
 
         epoch_time = time.time() - epoch_start
@@ -118,7 +108,6 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
         # Update best
         if acc_val > best_val_acc:
             best_val_acc = acc_val
-            # best_test_acc = eval_metrics(out, node_test_ids, y_test)
 
         # Per-epoch print
         logger.info(
@@ -127,17 +116,10 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
             f"time_taken: {epoch_time:.4f}s | reach_time: {reach_time:.4f}s"
         )
 
-        # ---- Full test evaluation every 100 epochs ----
+        # ---- Test ----
         if epoch % test_interval == 0:
-            if test_loader is None:
-                loss_test = loss_fn(out[node_test_ids], y_test).item()
-                acc_test = eval_metrics(out, node_test_ids, y_test)
-                auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
-            else:
-                loss_test, acc_test, auc_test = process_with_loader(test_loader, model, node_test_ids, y_test, loss_fn,
-                                                                 device, mode="test", optimizer=optimizer,
-                                                                 compute_auc=True,
-                                                                 logger=None)
+            loss_test, acc_test, auc_test = evaluate(model, loss_fn, data, node_test_ids, y_test, loader=test_loader,
+                                      device=device)
 
             test_time = time.time() - start_time
 
@@ -157,16 +139,10 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
 
     # ---- Final evaluation ----
     total_time = time.time() - start_time
-    if test_loader is None:
-        out = model(data.x, data.edge_index)
-        loss_test = loss_fn(out[node_test_ids], y_test).item()
-        acc_test = eval_metrics(out, node_test_ids, y_test)
-        auc_test = roc_auc_score(y_test.cpu().numpy(), out[node_test_ids].detach().cpu().numpy())
-    else:
-        loss_test, acc_test, auc_test = process_with_loader(test_loader, model, node_test_ids, y_test, loss_fn,
-                                                            device, mode="test", optimizer=optimizer,
-                                                            compute_auc=True,
-                                                            logger=None)
+
+    loss_test, acc_test, auc_test = evaluate(model, loss_fn, data, node_test_ids, y_test, loader=test_loader,
+                                      device=device)
+
     logger.info(
         f"Final Test set results: loss= {loss_test:.4f} | accuracy= {acc_test:.4f} | "
         f"auc= {auc_test:.4f} | total time= {total_time:.2f}s"
@@ -214,6 +190,7 @@ if __name__ == "__main__":
         device,
         args.bag_ratio,
         args.single_layer,
+        args.val_interval,
         args.test_interval,
         hidden_units=args.hidden,
         dropout_rate=args.dropout,

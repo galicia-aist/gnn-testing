@@ -33,6 +33,11 @@
     "default": 500,
     "help": "Number of epochs to train."
   },
+  "val_interval": {
+    "type": "int",
+    "default": 5,
+    "help": "Set epoch interval for validation"
+  },
   "test_interval": {
     "type": "int",
     "default": 100,

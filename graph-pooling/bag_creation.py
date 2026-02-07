@@ -3,7 +3,7 @@ import random
 import torch
 from utils import get_flattened_nodes
 
-def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, seed=42, logger=None):
+def get_eval_nodes(m, n, chosen_label, labels, label_node, label_non_node, bag_pos_ratio, logger=None):
     bag_node = dict()
 
     # internal node ratio for positive and negative bags

@@ -2,31 +2,36 @@ import torch
 from utils import eval_metrics
 from sklearn.metrics import roc_auc_score
 
-def train(model, optimizer, loss_fn, data, node_train_ids, y_train):
-    model.train()
-    optimizer.zero_grad()
-    out = model(data.x, data.edge_index)
-    loss = loss_fn(out[node_train_ids], y_train)
-    loss.backward()
-    optimizer.step()
-    return loss.item(), out
+def train(model, optimizer, loss_fn, data, node_train_ids, y_train,  loader=None, device=None, logger=None):
+    if loader is None:
+        model.train()
+        optimizer.zero_grad()
+        out = model(data.x, data.edge_index)
+        loss = loss_fn(out[node_train_ids], y_train)
+        loss.backward()
+        optimizer.step()
+        acc_train = eval_metrics(out, node_train_ids, y_train)
+        loss_train = loss.item()
+    else:
+        loss_train, acc_train, _ = process_with_loader(loader, model, node_train_ids, y_train, loss_fn, device,
+                                                       mode="train", optimizer=optimizer, compute_auc=False,
+                                                       logger=None)
+    return loss_train, acc_train
 
 @torch.no_grad()
-def test(model, out, node_train_ids, node_val_ids, node_test_ids, y_train, y_val, y_test, loss_fn):
-    model.eval()
-
-    # Accuracies
-    acc_train = eval_metrics(out, node_train_ids, y_train)
-    acc_val = eval_metrics(out, node_val_ids, y_val)
-    acc_test = eval_metrics(out, node_test_ids, y_test)
-
-    # Validation AUC
-    auc_val = roc_auc_score(y_val.cpu().numpy(), out[node_val_ids].cpu().numpy())
-
-    # Validation loss
-    loss_val = loss_fn(out[node_val_ids], y_val).item()
-
-    return acc_train, acc_val, acc_test, loss_val, auc_val
+def evaluate(model, loss_fn, data, node_eval_ids, y_eval, loader=None, device=None, logger=None):
+    if loader is None:
+        model.eval()
+        out = model(data.x, data.edge_index)
+        loss = loss_fn(out[node_eval_ids], y_eval)
+        acc_eval = eval_metrics(out, node_eval_ids, y_eval)
+        auc_eval = roc_auc_score(y_eval.cpu().numpy(), out[node_eval_ids].cpu().numpy())
+        loss_eval = loss.item()
+    else:
+        loss_eval, acc_eval, auc_eval = process_with_loader(loader, model, node_eval_ids, y_eval, loss_fn, device,
+                                                       mode="train", optimizer=None, compute_auc=True,
+                                                       logger=None)
+    return loss_eval, acc_eval, auc_eval
 
 def process_with_loader(
     loader,
