@@ -29,7 +29,7 @@ def evaluate(model, loss_fn, data, node_eval_ids, y_eval, loader=None, device=No
         loss_eval = loss.item()
     else:
         loss_eval, acc_eval, auc_eval = process_with_loader(loader, model, node_eval_ids, y_eval, loss_fn, device,
-                                                       mode="train", optimizer=None, compute_auc=True,
+                                                       mode="eval", optimizer=None, compute_auc=True,
                                                        logger=None)
     return loss_eval, acc_eval, auc_eval
 
