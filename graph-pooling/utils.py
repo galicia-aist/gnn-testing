@@ -59,7 +59,7 @@ def load_data(d):
         dataset = Actor(root='../datasets/actor/')
     elif d.lower() == "reddit":
         dataset = Reddit(root='../datasets/reddit/')
-    elif d.lower() == "arxiv" or "products":
+    elif d.lower() in {"arxiv", "products", "mag"}:
         dataset = PygNodePropPredDataset(name=f"ogbn-{d.lower()}", root='../datasets/')
     device = torch.device('cpu')
     dataset = dataset[0].to(device)
@@ -268,7 +268,7 @@ def log_experiment_settings(logger, args):
     logger.info("Experiment settings:\n" + "\n".join(lines))
 
 
-def get_loaders(args, data, world_size=1, rank=0, logger=None):
+def get_loaders(args, train_mask, val_mask, test_mask, world_size=1, rank=0, logger=None):
     """
     Creates NeighborLoaders with or without DistributedSamplers depending on args.ddp.
 
@@ -302,15 +302,15 @@ def get_loaders(args, data, world_size=1, rank=0, logger=None):
                 shuffle=shuffle
             )
 
-        train_loader = make_loader(data.train_mask, [10, 5], True, make_sampler(data.train_mask, True))
-        val_loader = make_loader(data.val_mask, [25, 10], True, make_sampler(data.val_mask, True))
-        test_loader = make_loader(data.test_mask, [25, 10], False, make_sampler(data.test_mask, False))
+        train_loader = make_loader(train_mask, [10, 5], True, make_sampler(data.train_mask, True))
+        val_loader = make_loader(val_mask, [25, 10], True, make_sampler(data.val_mask, True))
+        test_loader = make_loader(test_mask, [25, 10], False, make_sampler(data.test_mask, False))
 
     else:
         # --- Regular loaders ---
-        train_loader = make_loader(data.train_mask, [25, 10], True)
-        val_loader = make_loader(data.val_mask, [25, 10], False)
-        test_loader = make_loader(data.test_mask, [25, 10], False)
+        train_loader = make_loader(train_mask, [25, 10], True)
+        val_loader = make_loader(val_mask, [25, 10], False)
+        test_loader = make_loader(test_mask, [25, 10], False)
 
         # Get the root logger
         root_logger = logging.getLogger()

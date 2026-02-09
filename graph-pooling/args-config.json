@@ -7,9 +7,9 @@
   },
   "d": {
     "type": "str",
-    "choices": ["coraml", "citeseer", "photo", "actor", "reddit", "arxiv", "products"],
+    "choices": ["coraml", "citeseer", "photo", "actor", "reddit", "arxiv", "products", "mag"],
     "required": true,
-    "help": "Dataset to use (coraml=Cora-ML, citeseer=CiteSeer, photo=Amazon-Photo, actor=Actor, reddit=Reddit, arxiv=OGB Arxiv, products=OGB Products)."
+    "help": "Dataset to use (coraml=Cora-ML, citeseer=CiteSeer, photo=Amazon-Photo, actor=Actor, reddit=Reddit, arxiv=OGB Arxiv, products=OGB Products, mag=OGB Mag)."
   },
   "mode": {
     "type": "int",

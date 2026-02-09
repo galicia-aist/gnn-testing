@@ -25,6 +25,14 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
 
     if chosen_dataset.lower() in {"arxiv", "products"}:
         labels = encode_onehot(dataset.y.squeeze().numpy())
+    elif chosen_dataset.lower() == "mag":
+        # MAG: only paper nodes are labeled
+        dataset.x = dataset.x_dict["paper"]
+        dataset.y = dataset.y_dict["paper"].view(-1, 1)
+        dataset.edge_index = dataset.edge_index_dict[
+            ("paper", "cites", "paper")
+        ]
+        labels = encode_onehot(dataset.y.squeeze().numpy())
     else:
         labels = encode_onehot(dataset.y.numpy())
 
@@ -40,7 +48,8 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
 
     # Pick a chosen class and consistent evaluation nodes
 
-    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node, label_non_node, bag_ratio, logger=logger)
+    idx_train, idx_val, idx_test, node_train, node_eva = get_eval_nodes(m, n, chosen_label, dataset.y, label_node,
+                                                                        label_non_node, bag_ratio, logger=logger)
 
     node_train_keys = list(node_train.keys())
     node_eva_keys = list(node_eva.keys())
@@ -59,13 +68,7 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
         val_mask = make_input_nodes(node_val_ids.cpu(), dataset.num_nodes)
         test_mask = make_input_nodes(node_test_ids.cpu(), dataset.num_nodes)
 
-        dataset.train_mask = train_mask
-        dataset.val_mask = val_mask
-        dataset.test_mask = test_mask
-
-        train_loader, val_loader, test_loader = get_loaders(
-            args, dataset, logger=logger
-        )
+        train_loader, val_loader, test_loader = get_loaders(args, train_mask, val_mask, test_mask, logger=logger)
     else:
         train_loader = val_loader = test_loader = None
 
