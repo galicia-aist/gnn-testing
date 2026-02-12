@@ -268,7 +268,7 @@ def log_experiment_settings(logger, args):
     logger.info("Experiment settings:\n" + "\n".join(lines))
 
 
-def get_loaders(args, train_mask, val_mask, test_mask, world_size=1, rank=0, logger=None):
+def get_loaders(args, data, train_mask, val_mask, test_mask, world_size=1, rank=0, logger=None):
     """
     Creates NeighborLoaders with or without DistributedSamplers depending on args.ddp.
 

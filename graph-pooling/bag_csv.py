@@ -12,7 +12,13 @@ dataset_pattern = re.compile(r'^\s*d\s*:\s*(\w+)', re.MULTILINE)
 model_pattern = re.compile(r'^\s*model\s*:\s*(\w+)', re.MULTILINE)
 pool_pattern = re.compile(r'^\s*pool\s*:\s*(\w+)', re.MULTILINE)
 bag_pattern = re.compile(r'^\s*bag_ratio\s*:\s*([\d\.]+)', re.MULTILINE)
-table_pattern = re.compile(r'^\s*(\d+)\s*\|\s*([\d\.]+)\s*\|\s*([\d\.]+)\s*\|\s*([\d\.]+)\s*\|\s*([\d\.]+)')
+
+# 🔹 NEW: single_layer pattern
+single_layer_pattern = re.compile(r'^\s*single_layer\s*:\s*(True|False)', re.MULTILINE)
+
+table_pattern = re.compile(
+    r'^\s*(\d+)\s*\|\s*([\d\.]+|[A-Za-z]+)\s*\|\s*([\d\.]+)\s*\|\s*([\d\.]+)\s*\|\s*([\d\.]+)'
+)
 
 all_rows = []
 
@@ -28,16 +34,18 @@ for filename in os.listdir(results_dir):
         model_match = model_pattern.search(content)
         pool_match = pool_pattern.search(content)
         bag_match = bag_pattern.search(content)
+        single_layer_match = single_layer_pattern.search(content)
 
-        if not (dataset_match and model_match and pool_match and bag_match):
+        if not (dataset_match and model_match and pool_match and bag_match and single_layer_match):
             continue
 
         dataset = dataset_match.group(1)
         model = model_match.group(1)
         pool = pool_match.group(1)
         bag_ratio = float(bag_match.group(1)) * 100  # convert to %
+        single_layer = single_layer_match.group(1) == "True"  # bool
 
-        # Extract table rows using --- counting
+        # Extract table rows
         lines = content.splitlines()
         dash_count = 0
         epochs = []
@@ -49,7 +57,8 @@ for filename in os.listdir(results_dir):
             if line.strip().startswith('---'):
                 dash_count += 1
                 continue
-            if dash_count == 2:  # Table starts after second ---
+
+            if dash_count == 2:
                 match = table_pattern.match(line)
                 if match:
                     epoch, loss, acc, auc, time_val = match.groups()
@@ -75,6 +84,7 @@ for filename in os.listdir(results_dir):
                 'model': model,
                 'pool': pool,
                 'bag_ratio': bag_ratio,
+                'single_layer': single_layer,  # 🔹 NEW COLUMN
                 'epoch': e,
                 'accuracy': acc,
                 'auc': auc,

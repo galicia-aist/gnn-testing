@@ -63,12 +63,12 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
     node_test_ids = torch.tensor([node_eva_keys[i][0] for i in idx_test], dtype=torch.long, device=device)
     y_test = torch.tensor([node_eva[node_eva_keys[i]] for i in idx_test], dtype=torch.float, device=device)
 
-    if chosen_dataset.lower() in {"reddit", "products"}:
+    if chosen_dataset.lower() in {"reddit", "products" "mag"}:
         train_mask = make_input_nodes(node_train_ids.cpu(), dataset.num_nodes)
         val_mask = make_input_nodes(node_val_ids.cpu(), dataset.num_nodes)
         test_mask = make_input_nodes(node_test_ids.cpu(), dataset.num_nodes)
 
-        train_loader, val_loader, test_loader = get_loaders(args, train_mask, val_mask, test_mask, logger=logger)
+        train_loader, val_loader, test_loader = get_loaders(args, dataset, train_mask, val_mask, test_mask, logger=logger)
     else:
         train_loader = val_loader = test_loader = None
 
@@ -89,7 +89,6 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
     # ---- Training loop ----
     test_results = []
     start_time = time.time()
-    best_val_acc = 0
     best_test_acc = 0
 
     for epoch in range(1, max_epochs + 1):
@@ -108,10 +107,6 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
         epoch_time = time.time() - epoch_start
         reach_time = time.time() - start_time
 
-        # Update best
-        if acc_val > best_val_acc:
-            best_val_acc = acc_val
-
         # Per-epoch print
         logger.info(
             f"Epoch: {epoch:04d} | loss_train: {loss_train:.4f} | acc_train: {acc_train:.4f} | "
@@ -123,6 +118,10 @@ def run_experiment(chosen_dataset, chosen_model, device, bag_ratio, single_layer
         if epoch % test_interval == 0:
             loss_test, acc_test, auc_test = evaluate(model, loss_fn, data, node_test_ids, y_test, loader=test_loader,
                                       device=device)
+
+            # Update best
+            if acc_test > best_test_acc:
+                best_test_acc = acc_test
 
             test_time = time.time() - start_time
 
